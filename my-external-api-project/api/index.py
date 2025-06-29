@@ -123,5 +123,5 @@ def odata_endpoint(entity_set):
 # For local development:
 if __name__ == '__main__':
     # Set a dummy environment variable for local testing if you don't have it set already
-    # os.environ["NEON_DATABASE_URL"] = "postgresql://user:password@ep-host.region.aws.neon.tech/dbname?sslmode=require"
+    os.environ["NEON_DATABASE_URL"] = "postgresql://neondb_owner:npg_OnBfTPG7N4cm@ep-morning-king-a43daw4l-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
     app.run(debug=True)
