@@ -1,0 +1,3 @@
+Flask==3.0.3 # Or current stable version
+psycopg2-binary==2.9.9 # Or current stable version
+python-dateutil==2.9.0 # If you end up using it for date parsing/formatting
