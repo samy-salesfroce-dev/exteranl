@@ -32,14 +32,12 @@ def get_db_connection():
 def odata_metadata():
     """
     Serves the OData $metadata (CSDL XML) document.
-    This XML is now configured for your 'test' table with 'ExternalHistory' entity type,
-    and the EntitySet name also reflects 'external_history'.
+    This XML is now configured for your 'event' table with 'ExternalHistory' entity type.
     """
     logger.info("Received request for OData $metadata endpoint.")
 
-    # --- IMPORTANT: The 'Name' attribute for EntitySet MUST match your actual PostgreSQL table name exactly. ---
-    # If your PostgreSQL table is still named 'test', you should change EntitySet Name="external_history" back to Name="test".
-    # If you have renamed your PostgreSQL table to 'external_history', then this is correct.
+    # EntitySet Name ('event') MUST match your actual PostgreSQL table name.
+    # EntityType Name ('ExternalHistory') is a logical name.
     
     metadata_xml = """<?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
@@ -60,7 +58,6 @@ def odata_metadata():
             </EntityType>
 
             <EntityContainer Name="DefaultContainer">
-                <!-- The 'Name' attribute here ('external_history') MUST match your actual PostgreSQL table name -->
                 <EntitySet Name="event" EntityType="externalapi.ExternalHistory"/>
             </EntityContainer>
         </Schema>
@@ -70,7 +67,7 @@ def odata_metadata():
     return Response(metadata_xml, mimetype='application/xml')
 
 
-# --- Existing OData Endpoint ---
+# --- Existing OData Endpoint (MODIFIED for consistent column quoting) ---
 @app.route('/api/odata/<path:entity_set>', methods=['GET'])
 def odata_endpoint(entity_set):
     """
@@ -85,11 +82,13 @@ def odata_endpoint(entity_set):
     try:
         # Sanitize entity_set (table name) - IMPORTANT for security
         # Quote the table name to handle potential case sensitivity or special characters in DB
-        safe_entity_set_quoted = f'"{entity_set.replace("\"", "")}"' # Remove any existing quotes, then add
+        # The raw entity_set comes from the URL, like "event"
+        # We quote it for the SQL query, e.g., "event"
+        safe_entity_set_quoted = f'"{entity_set}"' # Quote the entire entity_set as it is directly the table name.
         
         # Original validation remains, ensuring the path is clean
         safe_entity_set_raw = ''.join(char for char in entity_set if char.isalnum() or char == '_')
-        if not safe_entity_set_raw or safe_entity_set_raw != entity_set: # Check if original path was clean first
+        if not safe_entity_set_raw or safe_entity_set_raw != entity_set:
             logger.warning(f"Invalid entity_set requested: {entity_set}. Sanitized to: {safe_entity_set_raw}")
             return jsonify({"error": "Invalid entity set name provided in the URL."}), 400
 
@@ -99,11 +98,9 @@ def odata_endpoint(entity_set):
             sanitized_columns = []
             for col in select_param.split(','):
                 cleaned_col = col.strip()
-                # Quote column names for SQL queries if they contain spaces
-                if " " in cleaned_col:
+                # Always quote column names for SQL queries to handle casing and spaces
+                if cleaned_col: # Ensure it's not an empty string
                     sanitized_columns.append(f'"{cleaned_col}"')
-                else:
-                    sanitized_columns.append(cleaned_col) # No quotes needed if no spaces, assuming simple names
             
             if sanitized_columns:
                 columns_to_select = ", ".join(sanitized_columns)
@@ -124,8 +121,8 @@ def odata_endpoint(entity_set):
                     operator_raw = parts[1]
                     value_raw = ' '.join(parts[2:])
 
-                    # Quote property name for SQL if it contains spaces
-                    prop_name = f'"{prop_name_raw}"' if " " in prop_name_raw else prop_name_raw
+                    # Always quote property name for SQL
+                    prop_name_quoted = f'"{prop_name_raw}"'
                     
                     if operator_raw.lower() in ['eq', 'gt', 'lt', 'ge', 'le', 'ne']:
                         sql_operator_map = {
@@ -147,7 +144,7 @@ def odata_endpoint(entity_set):
                                 except ValueError:
                                     value = value_raw
 
-                        query_parts.append(f"{prop_name} {sql_operator} %s")
+                        query_parts.append(f"{prop_name_quoted} {sql_operator} %s") # Use quoted property name
                         sql_params.append(value)
                     else:
                         logger.warning(f"Unsupported operator in $filter: '{operator_raw}'. Ignoring filter.")
@@ -169,13 +166,13 @@ def odata_endpoint(entity_set):
                 if part:
                     components = part.split(' ')
                     col_name_raw = components[0]
-                    # Quote column name for ORDER BY if it contains spaces
-                    col_name = f'"{col_name_raw}"' if " " in col_name_raw else col_name_raw
+                    # Always quote column name for ORDER BY
+                    col_name_quoted = f'"{col_name_raw}"'
                     direction = 'ASC'
                     if len(components) > 1 and components[1].lower() == 'desc':
                         direction = 'DESC'
                     
-                    order_parts.append(f"{col_name} {direction}")
+                    order_parts.append(f"{col_name_quoted} {direction}") # Use quoted column name
             if order_parts:
                 order_by_clause = f" ORDER BY {', '.join(order_parts)}"
             else:
@@ -225,7 +222,7 @@ def odata_endpoint(entity_set):
             data.append(row_dict)
 
         odata_response = {
-            "@odata.context": f"/api/odata/$metadata#{safe_entity_set_raw}", # Use raw for metadata context
+            "@odata.context": f"/api/odata/$metadata#{safe_entity_set_raw}",
             "value": data
         }
         logger.info(f"Successfully retrieved {len(data)} records for {safe_entity_set_raw}.")
