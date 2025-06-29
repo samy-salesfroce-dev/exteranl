@@ -27,39 +27,41 @@ def get_db_connection():
         logger.exception(f"Error connecting to Neon database: {e}")
         raise
 
-# --- NEW: OData Metadata Endpoint ---
+# --- OData Metadata Endpoint ---
 @app.route('/api/odata/$metadata', methods=['GET'])
 def odata_metadata():
     """
     Serves the OData $metadata (CSDL XML) document.
-    This XML is now configured for your 'test' table columns.
+    This XML is now configured for your 'test' table with 'ExternalHistory' entity type,
+    and the EntitySet name also reflects 'external_history'.
     """
     logger.info("Received request for OData $metadata endpoint.")
 
-    # --- IMPORTANT: Verify 'test' matches your actual database table name exactly. ---
-    # The EntityType Name (e.g., "TestRecord") is a logical name used in the OData metadata.
-    # The EntitySet Name (e.g., "test") MUST match your actual PostgreSQL table name.
+    # --- IMPORTANT: The 'Name' attribute for EntitySet MUST match your actual PostgreSQL table name exactly. ---
+    # If your PostgreSQL table is still named 'test', you should change EntitySet Name="external_history" back to Name="test".
+    # If you have renamed your PostgreSQL table to 'external_history', then this is correct.
     
     metadata_xml = """<?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
     <edmx:DataServices>
         <Schema Namespace="externalapi" xmlns="http://docs.oasis-open.org/odata/ns/edm">
-            <EntityType Name="TestRecord">
+            <EntityType Name="ExternalHistory">
                 <Key><PropertyRef Name="id"/></Key>
                 <Property Name="id" Type="Edm.Int32" Nullable="false"/>
-                <Property Name="Data_time" Type="Edm.DateTimeOffset"/>
-                <Property Name="Event_type" Type="Edm.String"/>
-                <Property Name="Field_name" Type="Edm.String"/>
-                <Property Name="New_value" Type="Edm.String"/>
+                <Property Name="Data time" Type="Edm.DateTimeOffset"/>
+                <Property Name="Event type" Type="Edm.String"/>
+                <Property Name="Field name" Type="Edm.String"/>
+                <Property Name="New value" Type="Edm.String"/>
                 <Property Name="Object" Type="Edm.String"/>
-                <Property Name="Old_value" Type="Edm.String"/>
-                <Property Name="Record_Id" Type="Edm.String"/>
-                <Property Name="Salesforce_id" Type="Edm.String"/>
+                <Property Name="Old value" Type="Edm.String"/>
+                <Property Name="Record Id" Type="Edm.String"/>
+                <Property Name="Salesforce id" Type="Edm.String"/>
                 <Property Name="User" Type="Edm.String"/>
             </EntityType>
 
             <EntityContainer Name="DefaultContainer">
-                <EntitySet Name="test" EntityType="externalapi.TestRecord"/>
+                <!-- The 'Name' attribute here ('external_history') MUST match your actual PostgreSQL table name -->
+                <EntitySet Name="external_history" EntityType="externalapi.ExternalHistory"/>
             </EntityContainer>
         </Schema>
     </edmx:DataServices>
@@ -68,7 +70,7 @@ def odata_metadata():
     return Response(metadata_xml, mimetype='application/xml')
 
 
-# --- Existing OData Endpoint (No Change Here, only re-including for completeness) ---
+# --- Existing OData Endpoint ---
 @app.route('/api/odata/<path:entity_set>', methods=['GET'])
 def odata_endpoint(entity_set):
     """
@@ -82,22 +84,26 @@ def odata_endpoint(entity_set):
 
     try:
         # Sanitize entity_set (table name) - IMPORTANT for security
-        # Only allow alphanumeric characters and underscores to prevent SQL injection on table name
-        safe_entity_set = ''.join(char for char in entity_set if char.isalnum() or char == '_')
-        if not safe_entity_set or safe_entity_set != entity_set:
-            logger.warning(f"Invalid entity_set requested: {entity_set}. Sanitized to: {safe_entity_set}")
+        # Quote the table name to handle potential case sensitivity or special characters in DB
+        safe_entity_set_quoted = f'"{entity_set.replace("\"", "")}"' # Remove any existing quotes, then add
+        
+        # Original validation remains, ensuring the path is clean
+        safe_entity_set_raw = ''.join(char for char in entity_set if char.isalnum() or char == '_')
+        if not safe_entity_set_raw or safe_entity_set_raw != entity_set: # Check if original path was clean first
+            logger.warning(f"Invalid entity_set requested: {entity_set}. Sanitized to: {safe_entity_set_raw}")
             return jsonify({"error": "Invalid entity set name provided in the URL."}), 400
 
-        # --- Basic OData Query Parameter Parsing ---
         select_param = request.args.get('$select')
         columns_to_select = "*"
         if select_param:
             sanitized_columns = []
             for col in select_param.split(','):
-                # Ensure column names are sanitized before using in SQL
-                cleaned_col = ''.join(c for c in col.strip() if c.isalnum() or c == '_')
-                if cleaned_col:
-                    sanitized_columns.append(cleaned_col)
+                cleaned_col = col.strip()
+                # Quote column names for SQL queries if they contain spaces
+                if " " in cleaned_col:
+                    sanitized_columns.append(f'"{cleaned_col}"')
+                else:
+                    sanitized_columns.append(cleaned_col) # No quotes needed if no spaces, assuming simple names
             
             if sanitized_columns:
                 columns_to_select = ", ".join(sanitized_columns)
@@ -112,19 +118,16 @@ def odata_endpoint(entity_set):
         if filter_param:
             try:
                 # This is a very simplified filter parser, only handles "Property operator 'Value'"
-                # Example: "Name eq 'Alice'" or "Id gt 5"
-                # For production, consider using a proper OData parsing library or more robust logic.
                 parts = filter_param.split(' ')
                 if len(parts) >= 3:
                     prop_name_raw = parts[0]
                     operator_raw = parts[1]
                     value_raw = ' '.join(parts[2:])
 
-                    prop_name = ''.join(c for c in prop_name_raw if c.isalnum() or c == '_') # Sanitize property name
+                    # Quote property name for SQL if it contains spaces
+                    prop_name = f'"{prop_name_raw}"' if " " in prop_name_raw else prop_name_raw
                     
-                    if not prop_name:
-                        logger.warning(f"Sanitized property name is empty from '{prop_name_raw}'. Ignoring filter part.")
-                    elif operator_raw.lower() in ['eq', 'gt', 'lt', 'ge', 'le', 'ne']:
+                    if operator_raw.lower() in ['eq', 'gt', 'lt', 'ge', 'le', 'ne']:
                         sql_operator_map = {
                             'eq': '=', 'gt': '>', 'lt': '<', 'ge': '>=', 'le': '<=', 'ne': '!='
                         }
@@ -142,9 +145,9 @@ def odata_endpoint(entity_set):
                                 try:
                                     value = float(value_raw)
                                 except ValueError:
-                                    value = value_raw # Treat as string if no other type matches
+                                    value = value_raw
 
-                        query_parts.append(f'"{prop_name}" {sql_operator} %s') # Quote column name to handle spaces/special chars in OData, if needed in DB
+                        query_parts.append(f"{prop_name} {sql_operator} %s")
                         sql_params.append(value)
                     else:
                         logger.warning(f"Unsupported operator in $filter: '{operator_raw}'. Ignoring filter.")
@@ -165,12 +168,14 @@ def odata_endpoint(entity_set):
                 part = part.strip()
                 if part:
                     components = part.split(' ')
-                    col_name = ''.join(c for c in components[0] if c.isalnum() or c == '_') # Sanitize column name
+                    col_name_raw = components[0]
+                    # Quote column name for ORDER BY if it contains spaces
+                    col_name = f'"{col_name_raw}"' if " " in col_name_raw else col_name_raw
                     direction = 'ASC'
                     if len(components) > 1 and components[1].lower() == 'desc':
                         direction = 'DESC'
-                    if col_name: # Only add if column name is valid after sanitization
-                        order_parts.append(f'"{col_name}" {direction}') # Quote column name for ORDER BY
+                    
+                    order_parts.append(f"{col_name} {direction}")
             if order_parts:
                 order_by_clause = f" ORDER BY {', '.join(order_parts)}"
             else:
@@ -194,8 +199,8 @@ def odata_endpoint(entity_set):
             except ValueError:
                 logger.warning(f"Invalid $skip value: {skip_param}. Ignoring offset.")
 
-        # Final query construction
-        final_query = f'SELECT {columns_to_select} FROM "{safe_entity_set}"{where_clause}{order_by_clause}{limit_clause}{offset_clause};'
+        # Final query construction: Use the quoted table name for the FROM clause
+        final_query = f'SELECT {columns_to_select} FROM {safe_entity_set_quoted}{where_clause}{order_by_clause}{limit_clause}{offset_clause};'
         logger.info(f"Final SQL query: {final_query}")
         logger.info(f"SQL Parameters: {sql_params}")
 
@@ -205,27 +210,25 @@ def odata_endpoint(entity_set):
         cur.execute(final_query, sql_params)
         rows = cur.fetchall()
 
-        # Get column names from cursor description - this is robust
         column_names = [desc[0] for desc in cur.description]
 
         data = []
         for row in rows:
             row_dict = {}
             for i, col_value in enumerate(row):
-                # Basic type handling for OData compliance (e.g., datetime objects to ISO format)
                 if isinstance(col_value, (type(None))):
                     row_dict[column_names[i]] = None
-                elif hasattr(col_value, 'isoformat'): # Handles datetime, date, time objects
+                elif hasattr(col_value, 'isoformat'):
                     row_dict[column_names[i]] = col_value.isoformat()
                 else:
                     row_dict[column_names[i]] = col_value
             data.append(row_dict)
 
         odata_response = {
-            "@odata.context": f"/api/odata/$metadata#{safe_entity_set}",
+            "@odata.context": f"/api/odata/$metadata#{safe_entity_set_raw}", # Use raw for metadata context
             "value": data
         }
-        logger.info(f"Successfully retrieved {len(data)} records for {safe_entity_set}.")
+        logger.info(f"Successfully retrieved {len(data)} records for {safe_entity_set_raw}.")
         return jsonify(odata_response)
 
     except ValueError as ve:
