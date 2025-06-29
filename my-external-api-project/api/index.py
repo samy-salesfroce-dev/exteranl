@@ -61,7 +61,7 @@ def odata_metadata():
 
             <EntityContainer Name="DefaultContainer">
                 <!-- The 'Name' attribute here ('external_history') MUST match your actual PostgreSQL table name -->
-                <EntitySet Name="external_history" EntityType="externalapi.ExternalHistory"/>
+                <EntitySet Name="event" EntityType="externalapi.ExternalHistory"/>
             </EntityContainer>
         </Schema>
     </edmx:DataServices>
